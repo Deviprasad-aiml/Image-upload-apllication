@@ -135,11 +135,18 @@
   .refresh:hover { border-color: var(--ink); }
 
   .grid { columns: 3 200px; column-gap: 14px; }
-  .shot {
-    display: block; width: 100%; break-inside: avoid; margin: 0 0 14px; padding: 0;
-    border: 0; border-radius: 18px; overflow: hidden; cursor: zoom-in;
-    background: var(--line); position: relative;
+  .tile { position: relative; break-inside: avoid; margin: 0 0 14px; border-radius: 18px; overflow: hidden; background: var(--line); }
+  .shot { display: block; width: 100%; margin: 0; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
+  .del {
+    position: absolute; top: 10px; right: 10px; width: 36px; height: 36px;
+    display: grid; place-items: center; border: 0; border-radius: 50%; cursor: pointer;
+    background: rgba(20, 19, 43, .72); color: #fff; backdrop-filter: blur(4px);
+    opacity: 0; transition: opacity .2s ease, background .2s ease;
   }
+  .tile:hover .del, .del:focus-visible { opacity: 1; }
+  .del:hover { background: #C8344B; }
+  .del svg { width: 18px; height: 18px; }
+  @media (hover: none) { .del { opacity: 1; } }
   .shot img { display: block; width: 100%; height: auto; transition: transform .35s ease; }
   .shot:hover img { transform: scale(1.04); }
 
@@ -147,6 +154,7 @@
   @keyframes pulse { 50% { opacity: .45; } }
 
   .empty {
+    column-span: all;
     border: 2px dashed var(--line); border-radius: 24px; padding: 56px 24px; text-align: center; color: var(--muted);
   }
   .empty strong { display: block; color: var(--ink); font-family: var(--display); font-size: 22px; margin-bottom: 4px; }
@@ -160,6 +168,19 @@
     font: inherit; font-weight: 600; font-size: 14px; text-decoration: none; cursor: pointer;
     background: #fff; color: #1C1B3A; border: 0; border-radius: 999px; padding: 8px 16px;
   }
+
+  /* ---------- Delete confirmation ---------- */
+  #confirm {
+    background: var(--panel); color: var(--ink); border-radius: 22px; padding: 26px;
+    width: min(360px, 92vw); border: 1px solid var(--line);
+  }
+  #confirm h3 { font-family: var(--display); font-weight: 800; font-size: 22px; letter-spacing: -0.02em; margin: 0 0 6px; }
+  #confirm p { margin: 0 0 20px; color: var(--muted); font-size: 15px; }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
+  .confirm-actions button { font: inherit; font-weight: 600; font-size: 14px; border-radius: 999px; padding: 9px 18px; cursor: pointer; }
+  #confirm-cancel { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  #confirm-ok { background: #C8344B; color: #fff; border: 0; }
+  #confirm-ok:disabled { opacity: .6; cursor: default; }
 
   /* ---------- Toast ---------- */
   .toast {
@@ -213,6 +234,15 @@
   <div class="lb-bar">
     <a id="lb-open" href="#" target="_blank" rel="noopener">Open original</a>
     <button type="button" id="lb-close">Close</button>
+  </div>
+</dialog>
+
+<dialog id="confirm" aria-labelledby="confirm-title">
+  <h3 id="confirm-title">Delete this photo?</h3>
+  <p>It will be removed from your S3 bucket and can't be recovered.</p>
+  <div class="confirm-actions">
+    <button type="button" id="confirm-cancel">Cancel</button>
+    <button type="button" id="confirm-ok">Delete</button>
   </div>
 </dialog>
 
@@ -333,6 +363,53 @@
     grid.appendChild(d);
   }
 
+  const TRASH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
+
+  function makeTile(item) {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "shot";
+    view.setAttribute("aria-label", "View photo");
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "Uploaded photo";
+    img.src = item.url;
+    // Records with no file in S3 are hidden
+    img.onerror = () => {
+      console.warn("Image failed to load:", item.key);
+      tile.remove();
+      if (!grid.querySelector(".tile")) {
+        showEmpty("Photos could not be displayed", "Records exist but the image files could not be loaded from S3. Open the browser console for details.");
+        countEl.textContent = "";
+      } else { refreshCount(); }
+    };
+    view.onclick = () => openBox(item.url);
+    view.appendChild(img);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "del";
+    del.setAttribute("aria-label", "Delete photo");
+    del.innerHTML = TRASH_SVG;
+    del.onclick = (e) => { e.stopPropagation(); askDelete(item, tile); };
+
+    tile.append(view, del);
+    return tile;
+  }
+
+  function refreshCount() {
+    const n = grid.querySelectorAll(".tile").length;
+    if (n === 0) {
+      showEmpty("No photos yet", "Upload your first photo and it will appear here.");
+      countEl.textContent = "";
+    } else {
+      countEl.textContent = n + (n === 1 ? " photo" : " photos");
+    }
+  }
+
   async function loadImages() {
     showSkeletons();
     countEl.textContent = "";
@@ -345,36 +422,44 @@
         return;
       }
       grid.replaceChildren();
-      let shown = 0;
-      items.forEach((item) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "shot";
-        btn.setAttribute("aria-label", "View photo");
-        const img = document.createElement("img");
-        img.loading = "lazy";
-        img.alt = "Uploaded photo";
-        img.src = item.url;
-        // Records with no file in S3 (e.g. from test runs) are hidden
-        img.onerror = () => {
-          console.warn("Image failed to load:", item.key);
-          btn.remove(); shown--; updateCount(shown);
-          if (shown <= 0) showEmpty("Photos could not be displayed", "Records exist but the image files could not be loaded from S3. Open the browser console for details.");
-        };
-        btn.onclick = () => openBox(item.url);
-        btn.appendChild(img);
-        grid.appendChild(btn);
-        shown++;
-      });
-      updateCount(shown);
+      items.forEach((item) => grid.appendChild(makeTile(item)));
+      refreshCount();
     } catch (err) {
       showEmpty("Couldn't load your photos", "Check the API URL and CORS settings, then press Refresh.");
     }
   }
 
-  function updateCount(n) {
-    countEl.textContent = n > 0 ? n + (n === 1 ? " photo" : " photos") : "";
+  /* ---------- delete ---------- */
+  const confirmBox = $("confirm");
+  const okBtn = $("confirm-ok");
+  let pending = null;
+
+  function askDelete(item, tile) {
+    pending = { item, tile };
+    confirmBox.showModal();
   }
+  $("confirm-cancel").onclick = () => { pending = null; confirmBox.close(); };
+  okBtn.onclick = async () => {
+    if (!pending) return;
+    const { item, tile } = pending;
+    okBtn.disabled = true;
+    okBtn.textContent = "Deleting...";
+    try {
+      const res = await fetch(API + "/images/" + encodeURIComponent(item.imageId), { method: "DELETE" });
+      if (!res.ok) throw new Error("Delete failed (" + res.status + ")");
+      tile.remove();
+      refreshCount();
+      toast("Photo deleted");
+    } catch (err) {
+      toast(err.message === "Failed to fetch" ? "Delete failed: check API CORS allows DELETE" : err.message);
+    } finally {
+      pending = null;
+      okBtn.disabled = false;
+      okBtn.textContent = "Delete";
+      confirmBox.close();
+    }
+  };
+  confirmBox.addEventListener("click", (e) => { if (e.target === confirmBox) { pending = null; confirmBox.close(); } });
 
   /* ---------- lightbox ---------- */
   function openBox(url) {
