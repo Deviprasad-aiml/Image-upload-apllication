@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snapshelf – photo uploads on AWS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #ECEBF5;
+    --panel: #FFFFFF;
+    --ink: #1C1B3A;
+    --muted: #65648A;
+    --line: #D9D8EA;
+    --accent: #3B37F0;
+    --accent-ink: #FFFFFF;
+    --sun: #FFC933;
+    --ok: #1F8A5B;
+    --err: #C8344B;
+    --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+    --body: "DM Sans", "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14132B;
+      --panel: #1E1D3D;
+      --ink: #ECEBFA;
+      --muted: #9D9CC4;
+      --line: #33315C;
+      --accent: #7B78FF;
+      --accent-ink: #12112A;
+      --ok: #4CD08F;
+      --err: #FF7A90;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: light dark; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 24px 64px; }
+
+  header.top {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 8px 0 32px;
+  }
+  .brand { font-family: var(--display); font-weight: 800; font-size: 26px; letter-spacing: -0.02em; margin: 0; }
+  .brand-sub { color: var(--muted); font-size: 14px; margin: 0; text-align: right; }
+
+  .layout { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 32px; align-items: start; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+
+  .side { position: sticky; top: 24px; display: grid; gap: 16px; }
+  @media (max-width: 860px) { .side { position: static; } }
+
+  /* ---------- Drop zone: the one bold element ---------- */
+  .zone {
+    position: relative; display: block; overflow: hidden;
+    background: var(--accent); color: var(--accent-ink);
+    border-radius: 28px; padding: 28px 28px 30px;
+    min-height: 330px; cursor: pointer;
+    transition: transform .2s ease, background .2s ease, color .2s ease;
+  }
+  .zone:hover { transform: translateY(-2px); }
+  .zone.over { background: var(--sun); color: #1C1B3A; transform: scale(1.015); }
+  .zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+  .zone:focus-within { outline: 3px solid var(--ink); outline-offset: 4px; }
+
+  .prints { position: relative; height: 130px; margin-bottom: 22px; }
+  .prints span {
+    position: absolute; width: 96px; height: 112px;
+    background: #fff; border-radius: 6px; padding: 7px 7px 24px;
+    box-shadow: 0 10px 24px rgba(10, 8, 60, .28);
+    transition: transform .3s ease;
+  }
+  .prints span::before { content: ""; display: block; width: 100%; height: 100%; border-radius: 3px; }
+  .prints span:nth-child(1) { left: 0;    top: 14px; transform: rotate(-9deg); }
+  .prints span:nth-child(1)::before { background: linear-gradient(160deg, #FFC933, #FF8A5B); }
+  .prints span:nth-child(2) { left: 70px; top: 0;    transform: rotate(4deg); z-index: 1; }
+  .prints span:nth-child(2)::before { background: linear-gradient(160deg, #8BE3C7, #2E9CCA); }
+  .prints span:nth-child(3) { left: 150px; top: 18px; transform: rotate(12deg); }
+  .prints span:nth-child(3)::before { background: linear-gradient(160deg, #C7B8FF, #6E5BE6); }
+  .zone:hover .prints span:nth-child(1) { transform: rotate(-13deg) translateY(-4px); }
+  .zone:hover .prints span:nth-child(2) { transform: rotate(2deg) translateY(-8px); }
+  .zone:hover .prints span:nth-child(3) { transform: rotate(16deg) translateY(-4px); }
+
+  .zone h2 {
+    font-family: var(--display); font-weight: 800; font-size: 40px; line-height: 1.02;
+    letter-spacing: -0.03em; margin: 0 0 12px;
+  }
+  .zone p { margin: 0; font-size: 15px; opacity: .9; max-width: 30ch; }
+  .zone .pick {
+    display: inline-block; margin-top: 18px; padding: 10px 18px; border-radius: 999px;
+    background: var(--accent-ink); color: var(--accent); font-weight: 600; font-size: 15px;
+  }
+  .zone.over .pick { background: #1C1B3A; color: #fff; }
+
+  /* ---------- Upload queue ---------- */
+  .queue { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+  .row {
+    display: grid; grid-template-columns: 48px 1fr; gap: 12px; align-items: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 10px;
+  }
+  .row img { width: 48px; height: 48px; object-fit: cover; border-radius: 10px; background: var(--line); }
+  .row .name { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .state { font-size: 13px; color: var(--muted); margin-top: 1px; }
+  .row.done .state { color: var(--ok); }
+  .row.fail .state { color: var(--err); }
+  .bar { height: 5px; background: var(--line); border-radius: 99px; margin-top: 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .15s linear; }
+  .row.done .bar, .row.fail .bar { display: none; }
+
+  .rules { font-size: 13px; color: var(--muted); margin: 0; padding: 0 6px; }
+
+  /* ---------- Gallery ---------- */
+  .gallery-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .gallery-head h2 { font-family: var(--display); font-weight: 800; font-size: 30px; letter-spacing: -0.02em; margin: 0; }
+  .count { color: var(--muted); font-size: 14px; }
+  .refresh {
+    font: inherit; font-size: 14px; font-weight: 600; color: var(--ink);
+    background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; cursor: pointer;
+  }
+  .refresh:hover { border-color: var(--ink); }
+
+  .grid { columns: 3 200px; column-gap: 14px; }
+  .shot {
+    display: block; width: 100%; break-inside: avoid; margin: 0 0 14px; padding: 0;
+    border: 0; border-radius: 18px; overflow: hidden; cursor: zoom-in;
+    background: var(--line); position: relative;
+  }
+  .shot img { display: block; width: 100%; height: auto; transition: transform .35s ease; }
+  .shot:hover img { transform: scale(1.04); }
+
+  .skeleton { break-inside: avoid; margin: 0 0 14px; border-radius: 18px; background: var(--line); animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+
+  .empty {
+    border: 2px dashed var(--line); border-radius: 24px; padding: 56px 24px; text-align: center; color: var(--muted);
+  }
+  .empty strong { display: block; color: var(--ink); font-family: var(--display); font-size: 22px; margin-bottom: 4px; }
+
+  /* ---------- Lightbox ---------- */
+  dialog { border: 0; padding: 0; background: transparent; max-width: 94vw; max-height: 94vh; overflow: visible; }
+  dialog::backdrop { background: rgba(14, 12, 40, .82); backdrop-filter: blur(4px); }
+  dialog img { display: block; max-width: 94vw; max-height: 82vh; border-radius: 18px; }
+  .lb-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; }
+  .lb-bar a, .lb-bar button {
+    font: inherit; font-weight: 600; font-size: 14px; text-decoration: none; cursor: pointer;
+    background: #fff; color: #1C1B3A; border: 0; border-radius: 999px; padding: 8px 16px;
+  }
+
+  /* ---------- Toast ---------- */
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 24px); opacity: 0;
+    background: var(--ink); color: var(--bg); padding: 12px 18px; border-radius: 14px;
+    font-size: 14px; font-weight: 500; pointer-events: none; transition: .25s ease; max-width: 90vw; z-index: 10;
+  }
+  .toast.show { transform: translate(-50%, 0); opacity: 1; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1 class="brand">Snapshelf</h1>
+    <p class="brand-sub">Photos stored in a private Amazon S3 bucket</p>
+  </header>
+
+  <main class="layout">
+    <aside class="side">
+      <label class="zone" id="zone">
+        <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple aria-label="Choose photos to upload">
+        <div class="prints" aria-hidden="true"><span></span><span></span><span></span></div>
+        <h2>Drop photos here</h2>
+        <p>Drag them in, paste from your clipboard, or pick from your device.</p>
+        <span class="pick">Choose photos</span>
+      </label>
+
+      <ul class="queue" id="queue" aria-live="polite"></ul>
+      <p class="rules">JPG, PNG, WebP or GIF. Up to 5 MB each.</p>
+    </aside>
+
+    <section aria-labelledby="gal-title">
+      <div class="gallery-head">
+        <div>
+          <h2 id="gal-title">Your photos</h2>
+          <span class="count" id="count"></span>
+        </div>
+        <button class="refresh" id="refresh" type="button">Refresh</button>
+      </div>
+      <div class="grid" id="grid"></div>
+    </section>
+  </main>
+</div>
+
+<dialog id="lightbox" aria-label="Photo preview">
+  <img id="lb-img" alt="Uploaded photo">
+  <div class="lb-bar">
+    <a id="lb-open" href="#" target="_blank" rel="noopener">Open original</a>
+    <button type="button" id="lb-close">Close</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+  // 1) Paste your API Gateway Invoke URL here (no trailing slash)
+  const API = "https://YOUR_API_ID.execute-api.ap-south-1.amazonaws.com";
+
+  const ALLOWED = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+  const MAX_BYTES = 5 * 1024 * 1024;
+
+  const $ = (id) => document.getElementById(id);
+  const zone = $("zone"), fileInput = $("file"), queue = $("queue");
+  const grid = $("grid"), countEl = $("count");
+  const lightbox = $("lightbox"), lbImg = $("lb-img"), lbOpen = $("lb-open");
+
+  /* ---------- helpers ---------- */
+  let toastTimer;
+  function toast(msg) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
+  }
+
+  function addRow(file) {
+    const li = document.createElement("li");
+    li.className = "row";
+    const img = document.createElement("img");
+    img.alt = "";
+    img.src = URL.createObjectURL(file);
+    const box = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = file.name;
+    const state = document.createElement("div");
+    state.className = "state";
+    state.textContent = "Waiting";
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    const fill = document.createElement("i");
+    bar.appendChild(fill);
+    box.append(name, state, bar);
+    li.append(img, box);
+    queue.prepend(li);
+    return {
+      progress(p) { state.textContent = "Uploading " + p + "%"; fill.style.width = p + "%"; },
+      done() { li.classList.add("done"); state.textContent = "Uploaded"; },
+      fail(msg) { li.classList.add("fail"); state.textContent = msg; }
+    };
+  }
+
+  /* ---------- upload ---------- */
+  function putToS3(url, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", url);
+      xhr.setRequestHeader("Content-Type", file.type); // must match what Lambda signed
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("Storage rejected the file (" + xhr.status + ")")));
+      xhr.onerror = () => reject(new Error("Network or CORS error while uploading"));
+      xhr.send(file);
+    });
+  }
+
+  async function uploadOne(file) {
+    const row = addRow(file);
+    if (!ALLOWED.includes(file.type)) return row.fail("Use a JPG, PNG, WebP or GIF file");
+    if (file.size > MAX_BYTES) return row.fail("File is over 5 MB");
+    try {
+      row.progress(0);
+      const res = await fetch(API + "/upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contentType: file.type })
+      });
+      if (!res.ok) throw new Error("Could not get an upload link (" + res.status + ")");
+      const { uploadUrl } = await res.json();
+      await putToS3(uploadUrl, file, row.progress);
+      row.done();
+      return true;
+    } catch (err) {
+      row.fail(err.message);
+      return false;
+    }
+  }
+
+  async function handleFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    let ok = 0;
+    for (const f of files) { if (await uploadOne(f)) ok++; }
+    if (ok) { toast(ok + (ok === 1 ? " photo uploaded" : " photos uploaded")); loadImages(); }
+  }
+
+  /* ---------- gallery ---------- */
+  function showSkeletons() {
+    grid.replaceChildren();
+    [180, 240, 150, 210, 260, 170].forEach((h) => {
+      const s = document.createElement("div");
+      s.className = "skeleton";
+      s.style.height = h + "px";
+      grid.appendChild(s);
+    });
+  }
+
+  function showEmpty(title, text) {
+    grid.replaceChildren();
+    const d = document.createElement("div");
+    d.className = "empty";
+    const s = document.createElement("strong");
+    s.textContent = title;
+    d.append(s, text);
+    grid.appendChild(d);
+  }
+
+  async function loadImages() {
+    showSkeletons();
+    countEl.textContent = "";
+    try {
+      const res = await fetch(API + "/images");
+      if (!res.ok) throw new Error("Status " + res.status);
+      const items = await res.json();
+      if (!items.length) {
+        showEmpty("No photos yet", "Upload your first photo and it will appear here.");
+        return;
+      }
+      grid.replaceChildren();
+      let shown = 0;
+      items.forEach((item) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "shot";
+        btn.setAttribute("aria-label", "View photo");
+        const img = document.createElement("img");
+        img.loading = "lazy";
+        img.alt = "Uploaded photo";
+        img.src = item.url;
+        // Records with no file in S3 (e.g. from test runs) are hidden
+        img.onerror = () => { btn.remove(); shown--; updateCount(shown); };
+        btn.onclick = () => openBox(item.url);
+        btn.appendChild(img);
+        grid.appendChild(btn);
+        shown++;
+      });
+      updateCount(shown);
+    } catch (err) {
+      showEmpty("Couldn't load your photos", "Check the API URL and CORS settings, then press Refresh.");
+    }
+  }
+
+  function updateCount(n) {
+    countEl.textContent = n > 0 ? n + (n === 1 ? " photo" : " photos") : "";
+  }
+
+  /* ---------- lightbox ---------- */
+  function openBox(url) {
+    lbImg.src = url;
+    lbOpen.href = url;
+    lightbox.showModal();
+  }
+  $("lb-close").onclick = () => lightbox.close();
+  lightbox.addEventListener("click", (e) => { if (e.target === lightbox) lightbox.close(); });
+
+  /* ---------- events ---------- */
+  fileInput.addEventListener("change", () => { handleFiles(fileInput.files); fileInput.value = ""; });
+  $("refresh").onclick = loadImages;
+
+  ["dragenter", "dragover"].forEach((ev) =>
+    zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) =>
+    zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.remove("over"); }));
+  zone.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
+
+  document.addEventListener("paste", (e) => {
+    const files = Array.from(e.clipboardData?.files || []).filter((f) => f.type.startsWith("image/"));
+    if (files.length) handleFiles(files);
+  });
+
+  if (API.includes("YOUR_API_ID")) {
+    showEmpty("API URL not set", "Open index.html and replace YOUR_API_ID in the API constant with your Invoke URL.");
+  } else {
+    loadImages();
+  }
+</script>
+</body>
+</html>
