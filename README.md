@@ -2,6 +2,8 @@
 
 A photo upload and gallery app built entirely on AWS serverless services. The frontend is a static site hosted on **Amazon S3**. Photos are uploaded **directly from the browser to a private S3 bucket** using presigned URLs, so image data never passes through Lambda or API Gateway.
 
+**Live demo:** [https://dxq9xaxo17d4s.cloudfront.net](https://dxq9xaxo17d4s.cloudfront.net)
+
 > Region: `ap-south-1` (Mumbai)
 
 ![App screenshot](docs/screenshots/app.png)
@@ -12,10 +14,15 @@ A photo upload and gallery app built entirely on AWS serverless services. The fr
 - Per-file upload progress bars
 - Client-side validation (JPG, PNG, WebP, GIF, max 5 MB) plus server-side content-type allow-list
 - Masonry photo gallery with a full-size preview
+- Delete photos with a confirmation prompt (removes the S3 object and its DynamoDB record)
 - Private images bucket: photos are viewed through short-lived signed links
 - Dark mode support and a responsive layout
 
 ## Architecture
+
+![Architecture diagram](docs/architecture.png)
+
+The same flow as a diagram that GitHub renders from text:
 
 ```mermaid
 flowchart LR
@@ -29,6 +36,10 @@ flowchart LR
     API --> L2[Lambda<br/>listImages]
     L2 -->|scan| DB
     L2 -->|presigned GET URLs| U
+    U -->|5. DELETE /images/id| API
+    API --> L3[Lambda<br/>deleteImage]
+    L3 -->|delete object| IMG
+    L3 -->|delete record| DB
 ```
 
 ## Tech stack
@@ -50,6 +61,7 @@ flowchart LR
 2. `getUploadUrl` validates the content type, creates a unique key, saves a record in DynamoDB, and returns a presigned **PUT** URL valid for 5 minutes.
 3. The browser uploads the file straight to S3 with that URL.
 4. `GET /images` triggers `listImages`, which reads the records from DynamoDB and returns presigned **GET** URLs (valid for 1 hour) so the private images can be displayed.
+5. `DELETE /images/{imageId}` triggers `deleteImage`, which looks up the record, deletes the S3 object, then removes the DynamoDB record.
 
 ## Repository structure
 
@@ -57,7 +69,8 @@ flowchart LR
 snapshelf/
 ├── backend/
 │   ├── getUploadUrl.py
-│   └── listImages.py
+│   ├── listImages.py
+│   └── deleteImage.py
 ├── frontend/
 │   └── index.html
 ├── docs/
@@ -107,12 +120,12 @@ Create a role `image-upload-lambda-role` with `AWSLambdaBasicExecutionRole` and 
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
       "Resource": "arn:aws:s3:::myapp-images-<id>/*"
     },
     {
       "Effect": "Allow",
-      "Action": ["dynamodb:PutItem", "dynamodb:Scan"],
+      "Action": ["dynamodb:PutItem", "dynamodb:Scan", "dynamodb:GetItem", "dynamodb:DeleteItem"],
       "Resource": "arn:aws:dynamodb:ap-south-1:<ACCOUNT_ID>:table/images"
     }
   ]
@@ -121,7 +134,7 @@ Create a role `image-upload-lambda-role` with `AWSLambdaBasicExecutionRole` and 
 
 ### 4. Lambda functions
 
-Create `getUploadUrl` and `listImages` (Python) using the role above, paste the code from `backend/`, and set these environment variables on both:
+Create `getUploadUrl`, `listImages` and `deleteImage` (Python) using the role above, paste the code from `backend/`, and set these environment variables on both:
 
 | Key | Value |
 |---|---|
@@ -130,16 +143,17 @@ Create `getUploadUrl` and `listImages` (Python) using the role above, paste the 
 
 ### 5. API Gateway (HTTP API)
 
-Routes (exactly these two):
+Routes (exactly these three):
 
 | Method | Path | Integration |
 |---|---|---|
 | POST | `/upload-url` | `getUploadUrl` |
 | GET | `/images` | `listImages` |
+| DELETE | `/images/{imageId}` | `deleteImage` |
 
 CORS settings:
 - Allow origin: your S3 website endpoint (`http://...`, no trailing slash)
-- Allow methods: `GET`, `POST`, `OPTIONS`
+- Allow methods: `GET`, `POST`, `DELETE`, `OPTIONS`
 - Allow headers: `content-type`
 
 Do not add manual `OPTIONS` or `ANY` routes. They override API Gateway's built-in CORS handling.
@@ -181,7 +195,7 @@ Debugging tools used: CloudWatch Logs, browser DevTools (Console and Network), L
 - The images bucket is private. Photos are only reachable through short-lived presigned URLs.
 - The Lambda role is limited to one bucket and one table.
 - Uploads are limited to an allow-list of image content types.
-- This demo has no authentication, so anyone with the website URL can upload.
+- This demo has no authentication, so anyone with the website URL can upload or delete photos.
 
 ## Possible improvements
 
